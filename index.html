@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<script>
+/* ==========================================================
+   設定: 出力サイズの一覧
+   - 行を足す・消すだけでサイズを増減できます。
+   - on: true のものが、最初からチェックされた状態になります。
+   - 比率が同じ場合は Meta のサイズを採用しています。
+   ========================================================== */
+const SIZES = [
+  { key: '1x1',    ratio: '1:1',    width: 1080, height: 1080, use: 'Metaフィード・カルーセル／Googleスクエア',        on: true },
+  { key: '4x5',    ratio: '4:5',    width: 1080, height: 1350, use: 'Metaフィード縦長／Google縦長',                    on: true },
+  { key: '9x16',   ratio: '9:16',   width: 1080, height: 1920, use: 'Metaストーリーズ・リール／Google Demand Gen縦型', on: true },
+  { key: '191x1',  ratio: '1.91:1', width: 1200, height: 628,  use: 'Metaリンク広告／Google横長',                      on: true },
+];
+
+/* そのほかの設定 */
+const CONFIG = {
+  jpgQuality: 0.92,                 // JPGの品質
+  paddingMaxPct: 15,                // 余白の上限（%）
+  upscaleWarnAbove: 1.05,           // これより大きく拡大すると警告
+  maxBytesForGoogle: 5 * 1024 * 1024, // 5MB
+  zipPrefix: '広告画角_',
+};
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>広告画像の画角そろえ</title>
+<!-- zip保存用ライブラリ（このライブラリの読み込み以外、外部との通信はしません） -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+        integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" defer></script>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --text: #1d2330;
+    --muted: #5d6677;
+    --line: #d9dde5;
+    --accent: #1f6feb;
+    --accent-text: #ffffff;
+    --warn-bg: #fff4d6;
+    --warn-text: #7a4b00;
+    --err-bg: #fde7e7;
+    --err-text: #9b1c1c;
+    --drop: #eef4ff;
+    --frame: #c9ced8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b;
+      --panel: #1e2128;
+      --text: #e8eaef;
+      --muted: #a2a9b7;
+      --line: #343944;
+      --accent: #4c8dff;
+      --accent-text: #0b0d12;
+      --warn-bg: #3a2e10;
+      --warn-text: #ffd27a;
+      --err-bg: #3d1b1b;
+      --err-text: #ffaaaa;
+      --drop: #1b2436;
+      --frame: #4a505c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
+    line-height: 1.6; font-size: 16px;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 80px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  .lead { color: var(--muted); margin: 0 0 20px; font-size: .92rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .drop {
+    border: 2px dashed var(--frame); border-radius: 12px; padding: 28px 16px; text-align: center;
+    background: var(--drop); transition: border-color .15s;
+  }
+  .drop.over { border-color: var(--accent); }
+  .drop p { margin: 0 0 12px; }
+  button, .btn {
+    font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 8px 14px; cursor: pointer; min-height: 40px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .sizes { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .sizes label { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+  .sizes input { margin-top: 5px; width: 18px; height: 18px; flex: none; }
+  .sizes small { display: block; color: var(--muted); font-size: .82rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px 28px; margin-top: 14px; align-items: center; }
+  .row > div { min-width: 0; }
+  .field-title { font-weight: 600; margin-right: 8px; }
+  input[type=range] { width: 200px; max-width: 60vw; vertical-align: middle; }
+  .radio { margin-right: 14px; white-space: nowrap; }
+  .radio input { width: 18px; height: 18px; vertical-align: -3px; }
+  .note { color: var(--muted); font-size: .85rem; }
+  .msg { border-radius: 8px; padding: 10px 12px; margin: 0 0 16px; font-size: .92rem; }
+  .msg.err { background: var(--err-bg); color: var(--err-text); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .msg ul { margin: 6px 0 0; padding-left: 1.2em; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+  .item { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .item-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; margin-bottom: 10px; }
+  .item-name { font-weight: 600; word-break: break-all; }
+  .item-meta { color: var(--muted); font-size: .85rem; }
+  .outs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .out { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .thumb { height: 180px; display: flex; align-items: center; justify-content: center; }
+  .thumb img { max-width: 100%; max-height: 180px; outline: 1px solid var(--frame); background: #fff; display: block; }
+  .out-title { font-weight: 600; font-size: .92rem; }
+  .out-use { color: var(--muted); font-size: .78rem; line-height: 1.4; }
+  .badge { display: block; border-radius: 6px; padding: 4px 8px; font-size: .8rem; line-height: 1.4; }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .badge.err { background: var(--err-bg); color: var(--err-text); }
+  .out-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: auto; }
+  .out-foot .note { font-size: .8rem; }
+  .empty { color: var(--muted); text-align: center; padding: 20px 0; }
+  .hidden { display: none !important; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>広告画像の画角そろえ</h1>
+  <p class="lead">画像のまわりに白い余白を足して、広告のサイズにそろえます。画像の切り取りや引き伸ばしはしません。<br>
+    画像はこの端末の中だけで処理され、インターネットには送信されません。</p>
+
+  <section class="panel">
+    <h2>1. 画像を入れる</h2>
+    <div class="drop" id="drop">
+      <p>ここに画像をドラッグして入れてください（何枚でも可）</p>
+      <button type="button" class="primary" id="pick">画像を選ぶ</button>
+      <input type="file" id="file" accept="image/*" multiple class="visually-hidden">
+      <p class="note" style="margin:10px 0 0">使える形式: JPG・PNG・WebP など</p>
+    </div>
+  </section>
+
+  <div id="errors" class="msg err hidden" role="alert"></div>
+
+  <section class="panel">
+    <h2>2. 作るサイズと仕上がりを選ぶ</h2>
+    <div class="sizes" id="sizes"></div>
+    <div class="row">
+      <div>
+        <label for="pad" class="field-title">内側の余白</label>
+        <input type="range" id="pad" min="0" max="15" step="1" value="0">
+        <output id="padOut" for="pad">0%</output>
+        <div class="note">画像のまわりに、さらに白い余白を足します（0%＝余白を足さない）</div>
+      </div>
+      <div>
+        <span class="field-title">保存形式</span>
+        <label class="radio"><input type="radio" name="fmt" value="jpg" checked> JPG（おすすめ）</label>
+        <label class="radio"><input type="radio" name="fmt" value="png"> PNG</label>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="toolbar">
+      <button type="button" class="primary" id="zipBtn" disabled>まとめて保存（zip）</button>
+      <button type="button" id="clearBtn" disabled>画像をすべて外す</button>
+      <span class="note" id="status"></span>
+    </div>
+    <div id="zipMsg" class="msg err hidden"></div>
+    <div id="list"><p class="empty">まだ画像が入っていません</p></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- 状態 ----------
+  const state = {
+    items: [],         // { id, name, base, img, srcUrl, w, h, fileBytes, outputs: [] }
+    paddingPct: 0,
+    format: 'jpg',
+    enabled: new Set(SIZES.filter(s => s.on).map(s => s.key)),
+    errors: [],
+    renderGen: 0,
+    busy: false,
+  };
+  let nextId = 1;
+
+  const $ = id => document.getElementById(id);
+
+  // ---------- 計算の中心部分 ----------
+  /** 置き方を計算する（切り抜き・引き伸ばしなし、中央配置） */
+  function layout(srcW, srcH, outW, outH, paddingPct) {
+    const margin = Math.round(Math.min(outW, outH) * paddingPct / 100);
+    const innerW = outW - margin * 2;
+    const innerH = outH - margin * 2;
+    const scale = Math.min(innerW / srcW, innerH / srcH);
+    const drawW = Math.min(innerW, Math.max(1, Math.round(srcW * scale)));
+    const drawH = Math.min(innerH, Math.max(1, Math.round(srcH * scale)));
+    const x = Math.round((outW - drawW) / 2);
+    const y = Math.round((outH - drawH) / 2);
+    return { margin, scale, drawW, drawH, x, y };
+  }
+
+  /** 1枚を描く。白で塗ってから中央に置く */
+  function renderOne(img, srcW, srcH, size, paddingPct) {
+    const L = layout(srcW, srcH, size.width, size.height, paddingPct);
+    const canvas = document.createElement('canvas');
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size.width, size.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, L.x, L.y, L.drawW, L.drawH);
+    return { canvas, layout: L };
+  }
+
+  function canvasToBlob(canvas, format) {
+    const type = format === 'png' ? 'image/png' : 'image/jpeg';
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('画像の書き出しに失敗しました')), type,
+        format === 'png' ? undefined : CONFIG.jpgQuality);
+    });
+  }
+
+  // ---------- 読み込み ----------
+  function stripExt(name) {
+    const i = name.lastIndexOf('.');
+    return i > 0 ? name.slice(0, i) : name;
+  }
+
+  function uniqueBase(base) {
+    const used = new Set(state.items.map(it => it.base));
+    if (!used.has(base)) return base;
+    let n = 2;
+    while (used.has(base + '_' + n)) n++;
+    return base + '_' + n;
+  }
+
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      let done = false;
+      const ok = () => {
+        if (done) return; done = true;
+        if (!img.naturalWidth || !img.naturalHeight) { URL.revokeObjectURL(url); reject(new Error('empty')); return; }
+        resolve({ img, url });
+      };
+      const ng = () => { if (done) return; done = true; URL.revokeObjectURL(url); reject(new Error('decode')); };
+      img.onload = () => {
+        if (img.decode) img.decode().then(ok, ok); else ok();
+      };
+      img.onerror = ng;
+      img.src = url;
+    });
+  }
+
+  async function addFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const failed = [];
+    setStatus('読み込み中…');
+    for (const file of files) {
+      try {
+        const { img, url } = await loadImage(file);
+        state.items.push({
+          id: nextId++, name: file.name, base: uniqueBase(stripExt(file.name)),
+          img, srcUrl: url, w: img.naturalWidth, h: img.naturalHeight, fileBytes: file.size, outputs: [],
+        });
+      } catch (e) {
+        failed.push(file.name);
+      }
+    }
+    state.errors = failed;
+    showErrors();
+    await renderAll();
+  }
+
+  function showErrors() {
+    const box = $('errors');
+    if (!state.errors.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    box.innerHTML = '';
+    const p = document.createElement('div');
+    p.textContent = '次のファイルは読み込めませんでした。iPhoneの写真（HEIC形式）などは、JPGかPNGに変換してから入れてください。';
+    const ul = document.createElement('ul');
+    for (const n of state.errors) { const li = document.createElement('li'); li.textContent = n; ul.appendChild(li); }
+    box.append(p, ul);
+    box.classList.remove('hidden');
+  }
+
+  // ---------- 変換 ----------
+  async function renderAll() {
+    const gen = ++state.renderGen;
+    state.busy = true;
+    updateButtons();
+    const sizes = SIZES.filter(s => state.enabled.has(s.key));
+    const ext = state.format === 'png' ? 'png' : 'jpg';
+    if (state.items.length) setStatus('作成中…');
+    for (const item of state.items) {
+      const outs = [];
+      for (const size of sizes) {
+        const { canvas, layout: L } = renderOne(item.img, item.w, item.h, size, state.paddingPct);
+        const blob = await canvasToBlob(canvas, state.format);
+        if (gen !== state.renderGen) return; // 設定が途中で変わったら作り直し
+        outs.push({
+          sizeKey: size.key, size, width: canvas.width, height: canvas.height,
+          blob, url: URL.createObjectURL(blob), scale: L.scale, layout: L,
+          filename: `${item.base}_${size.width}x${size.height}.${ext}`,
+          upscaled: L.scale > CONFIG.upscaleWarnAbove,
+          tooLarge: blob.size > CONFIG.maxBytesForGoogle,
+        });
+        canvas.width = canvas.height = 0; // iPhoneのメモリ対策
+      }
+      for (const o of item.outputs) URL.revokeObjectURL(o.url);
+      item.outputs = outs;
+    }
+    if (gen !== state.renderGen) return;
+    state.busy = false;
+    drawList();
+    updateButtons();
+    const count = state.items.reduce((a, it) => a + it.outputs.length, 0);
+    setStatus(state.items.length ? `${state.items.length}枚の画像から ${count}枚を作成しました` : '');
+  }
+
+  // ---------- 画面 ----------
+  function fmtBytes(n) {
+    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + 'MB';
+    return Math.max(1, Math.round(n / 1024)) + 'KB';
+  }
+  function fmtScale(s) { return (Math.round(s * 100) / 100).toFixed(2); }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function drawList() {
+    const list = $('list');
+    list.innerHTML = '';
+    if (!state.items.length) { list.appendChild(el('p', 'empty', 'まだ画像が入っていません')); return; }
+    for (const item of state.items) {
+      const card = el('div', 'item');
+      card.dataset.id = item.id;
+      const head = el('div', 'item-head');
+      const left = el('div');
+      left.append(el('div', 'item-name', item.name), el('div', 'item-meta', `元の大きさ: ${item.w}×${item.h}`));
+      const rm = el('button', '', '外す');
+      rm.type = 'button';
+      rm.addEventListener('click', () => removeItem(item.id));
+      head.append(left, rm);
+      card.appendChild(head);
+
+      if (!item.outputs.length) {
+        card.appendChild(el('p', 'note', '作るサイズが1つも選ばれていません'));
+      }
+      const outs = el('div', 'outs');
+      for (const o of item.outputs) {
+        const box = el('div', 'out');
+        box.dataset.size = o.sizeKey;
+        const th = el('div', 'thumb');
+        const im = new Image();
+        im.src = o.url; im.alt = o.filename;
+        th.appendChild(im);
+        box.append(th, el('div', 'out-title', `${o.size.ratio}　${o.width}×${o.height}`), el('div', 'out-use', o.size.use));
+        if (o.upscaled) box.appendChild(el('span', 'badge warn upscale',
+          `拡大 ${fmtScale(o.scale)}倍（元の画像より大きく引き伸ばすため、ぼやけることがあります）`));
+        if (o.tooLarge) box.appendChild(el('span', 'badge err too-large',
+          `5MBを超えているため、Googleに入稿できません（JPGで保存するか、余白を変えてください）`));
+        const foot = el('div', 'out-foot');
+        foot.appendChild(el('span', 'note', fmtBytes(o.blob.size)));
+        const dl = el('button', '', '保存');
+        dl.type = 'button';
+        dl.addEventListener('click', () => downloadBlob(o.blob, o.filename));
+        foot.appendChild(dl);
+        box.appendChild(foot);
+        outs.appendChild(box);
+      }
+      card.appendChild(outs);
+      list.appendChild(card);
+    }
+  }
+
+  function removeItem(id) {
+    const i = state.items.findIndex(it => it.id === id);
+    if (i < 0) return;
+    const [it] = state.items.splice(i, 1);
+    for (const o of it.outputs) URL.revokeObjectURL(o.url);
+    URL.revokeObjectURL(it.srcUrl);
+    drawList(); updateButtons();
+    setStatus('');
+  }
+
+  function clearAll() {
+    for (const it of state.items) { for (const o of it.outputs) URL.revokeObjectURL(o.url); URL.revokeObjectURL(it.srcUrl); }
+    state.items = []; state.errors = []; state.renderGen++; state.busy = false;
+    showErrors(); drawList(); updateButtons(); setStatus('');
+  }
+
+  function updateButtons() {
+    const has = state.items.some(it => it.outputs.length);
+    $('zipBtn').disabled = !has || state.busy;
+    $('clearBtn').disabled = !state.items.length;
+  }
+
+  function setStatus(t) { $('status').textContent = t; }
+
+  // ---------- 保存 ----------
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  function zipName(d = new Date()) {
+    const p = n => String(n).padStart(2, '0');
+    return `${CONFIG.zipPrefix}${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.zip`;
+  }
+
+  async function buildZip() {
+    if (typeof JSZip === 'undefined') throw new Error('nozip');
+    const zip = new JSZip();
+    const used = new Set();
+    for (const it of state.items) for (const o of it.outputs) {
+      let name = o.filename, n = 2;
+      while (used.has(name)) { name = o.filename.replace(/(\.[^.]+)$/, `_${n++}$1`); }
+      used.add(name);
+      zip.file(name, o.blob, { compression: 'STORE' });
+    }
+    return zip.generateAsync({ type: 'blob', mimeType: 'application/zip' });
+  }
+
+  async function saveZip() {
+    const msg = $('zipMsg');
+    msg.classList.add('hidden');
+    $('zipBtn').disabled = true;
+    setStatus('zipを作成中…');
+    try {
+      const blob = await buildZip();
+      downloadBlob(blob, zipName());
+      setStatus('zipを保存しました');
+    } catch (e) {
+      msg.textContent = e.message === 'nozip'
+        ? 'まとめて保存の準備ができませんでした。インターネットにつながっているか確認して、ページを読み込み直してください。1枚ずつの「保存」は使えます。'
+        : 'zipの作成に失敗しました。枚数を減らしてもう一度お試しください。';
+      msg.classList.remove('hidden');
+      setStatus('');
+    } finally {
+      updateButtons();
+    }
+  }
+
+  // ---------- 操作の受け付け ----------
+  function buildSizeChecks() {
+    const box = $('sizes');
+    for (const s of SIZES) {
+      const lab = el('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = s.key; cb.checked = state.enabled.has(s.key);
+      cb.addEventListener('change', () => {
+        if (cb.checked) state.enabled.add(s.key); else state.enabled.delete(s.key);
+        renderAll();
+      });
+      const txt = el('span');
+      txt.append(el('strong', '', `${s.ratio}　${s.width}×${s.height}`), el('small', '', s.use));
+      lab.append(cb, txt);
+      box.appendChild(lab);
+    }
+  }
+
+  let padTimer = null;
+  function init() {
+    buildSizeChecks();
+    $('pad').max = String(CONFIG.paddingMaxPct);
+    $('pick').addEventListener('click', () => $('file').click());
+    $('file').addEventListener('change', e => { addFiles(e.target.files).finally(() => { e.target.value = ''; }); });
+    const drop = $('drop');
+    ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, () => drop.classList.remove('over')));
+    drop.addEventListener('drop', e => { e.preventDefault(); addFiles(e.dataTransfer && e.dataTransfer.files); });
+    // 枠の外に落としても、画像がブラウザで開かれてしまわないようにする
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', e => { e.preventDefault(); if (!drop.contains(e.target)) addFiles(e.dataTransfer && e.dataTransfer.files); });
+
+    $('pad').addEventListener('input', e => {
+      state.paddingPct = Number(e.target.value);
+      $('padOut').textContent = state.paddingPct + '%';
+      clearTimeout(padTimer);
+      padTimer = setTimeout(renderAll, 200);
+    });
+    document.querySelectorAll('input[name=fmt]').forEach(r => r.addEventListener('change', () => {
+      state.format = document.querySelector('input[name=fmt]:checked').value;
+      renderAll();
+    }));
+    $('zipBtn').addEventListener('click', saveZip);
+    $('clearBtn').addEventListener('click', clearAll);
+  }
+
+  // 動作確認用（画面の動きには影響しません）
+  window.__resizer = { state, layout, renderOne, buildZip, zipName, renderAll, SIZES, CONFIG };
+
+  init();
+})();
+</script>
+</body>
+</html>
